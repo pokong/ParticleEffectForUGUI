@@ -1,61 +1,46 @@
-#if IGNORE_ACCESS_CHECKS // [ASMDEFEX] DO NOT REMOVE THIS LINE MANUALLY.
-#if !UNITY_2019_1_OR_NEWER
-using System.IO;
-using System.Text.RegularExpressions;
 using UnityEditor;
+using UnityEngine;
+using UnityEngine.UI;
 
 namespace Coffee.UIExtensions
 {
-    public class UIParticleMenu
+    internal class UIParticleMenu
     {
-        static string GetPreviousSamplePath(string displayName, string sampleName)
+        [MenuItem("GameObject/UI/Particle System (Empty)", false, 2018)]
+        private static void AddParticleEmpty(MenuCommand menuCommand)
         {
-            string sampleRoot = $"Assets/Samples/{displayName}";
-            var sampleRootInfo = new DirectoryInfo(sampleRoot);
-            if (!sampleRootInfo.Exists) return null;
+            // Create empty UI element.
+            EditorApplication.ExecuteMenuItem("GameObject/UI/Image");
+            var ui = Selection.activeGameObject;
+            Object.DestroyImmediate(ui.GetComponent<Image>());
 
-            foreach (var versionDir in sampleRootInfo.GetDirectories())
-            {
-                var samplePath = Path.Combine(versionDir.ToString(), sampleName);
-                if (Directory.Exists(samplePath))
-                    return samplePath;
-            }
-            return null;
+            // Add UIParticle.
+            var uiParticle = ui.AddComponent<UIParticle>();
+            uiParticle.name = "UIParticle";
+            uiParticle.scale = 10;
+            uiParticle.rectTransform.sizeDelta = Vector2.zero;
         }
 
-
-        static void ImportSample(string packageName, string sampleName)
+        [MenuItem("GameObject/UI/Particle System", false, 2019)]
+        private static void AddParticle(MenuCommand menuCommand)
         {
-            string jsonPath = $"Packages/{packageName}/package.json";
-            string json = File.ReadAllText(jsonPath);
-            string version = Regex.Match(json, "\"version\"\\s*:\\s*\"([^\"]+)\"").Groups[1].Value;
-            string displayName = Regex.Match(json, "\"displayName\"\\s*:\\s*\"([^\"]+)\"").Groups[1].Value;
-            string src = $"{Path.GetDirectoryName(jsonPath)}/Samples~/{sampleName}";
-            string dst = $"Assets/Samples/{displayName}/{version}/{sampleName}";
-            string previous = GetPreviousSamplePath(displayName, sampleName);
+            // Create empty UIEffect.
+            AddParticleEmpty(menuCommand);
+            var uiParticle = Selection.activeGameObject.GetComponent<UIParticle>();
 
-            if (!string.IsNullOrEmpty(previous))
-            {
-                string msg = "A different version of the sample is already imported at\n\n"
-                    + previous
-                    + "\n\nIt will be deleted when you update. Are you sure you want to continue?";
-                if (!EditorUtility.DisplayDialog("Sample Importer", msg, "OK", "Cancel"))
-                    return;
+            // Create ParticleSystem.
+            EditorApplication.ExecuteMenuItem("GameObject/Effects/Particle System");
+            var ps = Selection.activeGameObject;
+            ps.transform.SetParent(uiParticle.transform, false);
+            ps.transform.localPosition = Vector3.zero;
 
-                FileUtil.DeleteFileOrDirectory(previous);
-                FileUtil.DeleteFileOrDirectory(previous + ".meta");
-            }
+            // Assign default material.
+            var renderer = ps.GetComponent<ParticleSystemRenderer>();
+            var defaultMat = AssetDatabase.GetBuiltinExtraResource<Material>("Default-Particle.mat");
+            renderer.material = defaultMat ? defaultMat : renderer.material;
 
-            FileUtil.CopyDirectoryRecursive(src, dst);
-            AssetDatabase.ImportAsset(dst, ImportAssetOptions.ImportRecursive);
-        }
-
-        [MenuItem("Assets/Samples/Import UIParticle Sample")]
-        static void ImportSample()
-        {
-            ImportSample("com.coffee.ui-particle", "Demo");
+            // Refresh particles.
+            uiParticle.RefreshParticles();
         }
     }
 }
-#endif
-#endif // [ASMDEFEX] DO NOT REMOVE THIS LINE MANUALLY.

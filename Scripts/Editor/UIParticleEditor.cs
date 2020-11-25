@@ -1,129 +1,41 @@
-#if IGNORE_ACCESS_CHECKS // [ASMDEFEX] DO NOT REMOVE THIS LINE MANUALLY.
 using UnityEditor;
 using UnityEditor.UI;
 using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
-using System;
-using ShaderPropertyType = Coffee.UIExtensions.UIParticle.AnimatableProperty.ShaderPropertyType;
+using UnityEditorInternal;
+using UnityEngine.UI;
 
 namespace Coffee.UIExtensions
 {
     [CustomEditor(typeof(UIParticle))]
     [CanEditMultipleObjects]
-    public class UIParticleEditor : GraphicEditor
+    internal class UIParticleEditor : GraphicEditor
     {
-        class AnimatedPropertiesEditor
-        {
-            static readonly List<string> s_ActiveNames = new List<string>();
-            static readonly System.Text.StringBuilder s_Sb = new System.Text.StringBuilder();
-
-            public string name;
-            public ShaderPropertyType type;
-
-            static string CollectActiveNames(SerializedProperty sp, List<string> result)
-            {
-                result.Clear();
-                for (int i = 0; i < sp.arraySize; i++)
-                {
-                    result.Add(sp.GetArrayElementAtIndex(i).FindPropertyRelative("m_Name").stringValue);
-                }
-
-                s_Sb.Length = 0;
-                if (result.Count == 0)
-                {
-                    s_Sb.Append("Nothing");
-                }
-                else
-                {
-                    result.Aggregate(s_Sb, (a, b) => s_Sb.AppendFormat("{0}, ", b));
-                    s_Sb.Length -= 2;
-                }
-
-                return s_Sb.ToString();
-            }
-
-            public static void DrawAnimatableProperties(SerializedProperty sp, Material mat)
-            {
-                if (!mat || !mat.shader)
-                    return;
-                bool isClicked = false;
-                using (new EditorGUILayout.HorizontalScope(GUILayout.ExpandWidth(false)))
-                {
-                    var r = EditorGUI.PrefixLabel(EditorGUILayout.GetControlRect(true), new GUIContent(sp.displayName, sp.tooltip));
-                    isClicked = GUI.Button(r, CollectActiveNames(sp, s_ActiveNames), EditorStyles.popup);
-                }
-
-                if (isClicked)
-                {
-                    GenericMenu gm = new GenericMenu();
-                    gm.AddItem(new GUIContent("Nothing"), s_ActiveNames.Count == 0, () =>
-                    {
-                        sp.ClearArray();
-                        sp.serializedObject.ApplyModifiedProperties();
-                    });
-
-
-                    for (int i = 0; i < sp.arraySize; i++)
-                    {
-                        var p = sp.GetArrayElementAtIndex(i);
-                        var name = p.FindPropertyRelative("m_Name").stringValue;
-                        var type = (ShaderPropertyType)p.FindPropertyRelative("m_Type").intValue;
-                        AddMenu(gm, sp, new AnimatedPropertiesEditor() { name = name, type = type }, false);
-                    }
-
-                    for (int i = 0; i < ShaderUtil.GetPropertyCount(mat.shader); i++)
-                    {
-                        var pName = ShaderUtil.GetPropertyName(mat.shader, i);
-                        var type = (ShaderPropertyType)ShaderUtil.GetPropertyType(mat.shader, i);
-                        AddMenu(gm, sp, new AnimatedPropertiesEditor() { name = pName, type = type }, true);
-
-                        if (type == ShaderPropertyType.Texture)
-                        {
-                            AddMenu(gm, sp, new AnimatedPropertiesEditor() { name = pName + "_ST", type = ShaderPropertyType.Vector }, true);
-                            AddMenu(gm, sp, new AnimatedPropertiesEditor() { name = pName + "_HDR", type = ShaderPropertyType.Vector }, true);
-                            AddMenu(gm, sp, new AnimatedPropertiesEditor() { name = pName + "_TexelSize", type = ShaderPropertyType.Vector }, true);
-                        }
-
-                    }
-
-                    gm.ShowAsContext();
-                }
-            }
-
-            public static void AddMenu(GenericMenu menu, SerializedProperty sp, AnimatedPropertiesEditor property, bool add)
-            {
-                if (add && s_ActiveNames.Contains(property.name))
-                    return;
-
-                menu.AddItem(new GUIContent(string.Format("{0} ({1})", property.name, property.type)), s_ActiveNames.Contains(property.name), () =>
-            {
-                var index = s_ActiveNames.IndexOf(property.name);
-                if (0 <= index)
-                {
-                    sp.DeleteArrayElementAtIndex(index);
-                }
-                else
-                {
-                    sp.InsertArrayElementAtIndex(sp.arraySize);
-                    var p = sp.GetArrayElementAtIndex(sp.arraySize - 1);
-                    p.FindPropertyRelative("m_Name").stringValue = property.name;
-                    p.FindPropertyRelative("m_Type").intValue = (int)property.type;
-                }
-                sp.serializedObject.ApplyModifiedProperties();
-            });
-            }
-        }
-
         //################################
         // Constant or Static Members.
         //################################
-        static readonly GUIContent s_ContentParticleMaterial = new GUIContent("Particle Material", "The material for rendering particles");
-        static readonly GUIContent s_ContentTrailMaterial = new GUIContent("Trail Material", "The material for rendering particle trails");
-        static readonly List<ParticleSystem> s_ParticleSystems = new List<ParticleSystem>();
-        static readonly Color s_GizmoColor = new Color(1f, 0.7f, 0.7f, 0.9f);
+        private static readonly GUIContent s_ContentRenderingOrder = new GUIContent("Rendering Order");
+        private static readonly GUIContent s_ContentRefresh = new GUIContent("Refresh");
+        private static readonly GUIContent s_ContentFix = new GUIContent("Fix");
+        private static readonly GUIContent s_ContentMaterial = new GUIContent("Material");
+        private static readonly GUIContent s_ContentTrailMaterial = new GUIContent("Trail Material");
+        private static readonly GUIContent s_Content3D = new GUIContent("3D");
+        private static readonly GUIContent s_ContentScale = new GUIContent("Scale");
+        private static readonly List<UIParticle> s_TempParents = new List<UIParticle>();
+        private static readonly List<UIParticle> s_TempChildren = new List<UIParticle>();
 
-        static readonly List<string> s_MaskablePropertyNames = new List<string>()
+        private SerializedProperty _spMaskable;
+        private SerializedProperty _spScale;
+        private SerializedProperty _spIgnoreCanvasScaler;
+        private SerializedProperty _spAnimatableProperties;
+        private SerializedProperty _spShrinkByMaterial;
+
+        private ReorderableList _ro;
+        private bool _xyzMode;
+        private bool _showMaterials;
+
+        private static readonly List<string> s_MaskablePropertyNames = new List<string>
         {
             "_Stencil",
             "_StencilComp",
@@ -132,6 +44,7 @@ namespace Coffee.UIExtensions
             "_StencilReadMask",
             "_ColorMask",
         };
+
 
         //################################
         // Public/Protected Members.
@@ -142,17 +55,76 @@ namespace Coffee.UIExtensions
         protected override void OnEnable()
         {
             base.OnEnable();
-            _spParticleSystem = serializedObject.FindProperty("m_ParticleSystem");
-            _spTrailParticle = serializedObject.FindProperty("m_TrailParticle");
-            _spScale = serializedObject.FindProperty("m_Scale");
-            _spIgnoreParent = serializedObject.FindProperty("m_IgnoreParent");
+            _spMaskable = serializedObject.FindProperty("m_Maskable");
+            _spScale = serializedObject.FindProperty("m_Scale3D");
+            _spIgnoreCanvasScaler = serializedObject.FindProperty("m_IgnoreCanvasScaler");
             _spAnimatableProperties = serializedObject.FindProperty("m_AnimatableProperties");
-            _particles = targets.Cast<UIParticle>().ToArray();
-            _shapeModuleUIs = null;
+            _spShrinkByMaterial = serializedObject.FindProperty("m_ShrinkByMaterial");
+            _showMaterials = EditorPrefs.GetBool("Coffee.UIExtensions.UIParticleEditor._showMaterials", true);
 
-            var targetsGos = targets.Cast<UIParticle>().Select(x => x.gameObject).ToArray();
-            _inspector = Resources.FindObjectsOfTypeAll<ParticleSystemInspector>()
-                .FirstOrDefault(x => x.targets.Cast<ParticleSystem>().Select(x => x.gameObject).SequenceEqual(targetsGos));
+            var sp = serializedObject.FindProperty("m_Particles");
+            _ro = new ReorderableList(sp.serializedObject, sp, true, true, true, true);
+            _ro.elementHeight = EditorGUIUtility.singleLineHeight * 3 + 4;
+            _ro.elementHeightCallback = _ => _showMaterials
+                ? 3 * (EditorGUIUtility.singleLineHeight + 2)
+                : EditorGUIUtility.singleLineHeight + 2;
+            _ro.drawElementCallback = (rect, index, active, focused) =>
+            {
+                EditorGUI.BeginDisabledGroup(sp.hasMultipleDifferentValues);
+                rect.y += 1;
+                rect.height = EditorGUIUtility.singleLineHeight;
+                var p = sp.GetArrayElementAtIndex(index);
+                EditorGUI.ObjectField(rect, p, GUIContent.none);
+                if (!_showMaterials) return;
+
+                rect.x += 15;
+                rect.width -= 15;
+                var ps = p.objectReferenceValue as ParticleSystem;
+                var materials = ps
+                    ? new SerializedObject(ps.GetComponent<ParticleSystemRenderer>()).FindProperty("m_Materials")
+                    : null;
+                rect.y += rect.height + 1;
+                MaterialField(rect, s_ContentMaterial, materials, 0);
+                rect.y += rect.height + 1;
+                MaterialField(rect, s_ContentTrailMaterial, materials, 1);
+                EditorGUI.EndDisabledGroup();
+                if (materials != null)
+                {
+                    materials.serializedObject.ApplyModifiedProperties();
+                }
+            };
+            _ro.drawHeaderCallback += rect =>
+            {
+#if !UNITY_2019_3_OR_NEWER
+                rect.y -= 1;
+#endif
+                EditorGUI.LabelField(new Rect(rect.x, rect.y, 150, rect.height), s_ContentRenderingOrder);
+
+                var content = EditorGUIUtility.IconContent(_showMaterials ? "VisibilityOn" : "VisibilityOff");
+                _showMaterials = GUI.Toggle(new Rect(rect.width - 55, rect.y, 24, 20), _showMaterials, content, EditorStyles.label);
+
+                if (GUI.Button(new Rect(rect.width - 35, rect.y, 60, rect.height), s_ContentRefresh, EditorStyles.miniButton))
+                {
+                    foreach (UIParticle t in targets)
+                    {
+                        t.RefreshParticles();
+                    }
+                }
+            };
+        }
+
+        private static void MaterialField(Rect rect, GUIContent label, SerializedProperty sp, int index)
+        {
+            if (sp == null || sp.arraySize <= index)
+            {
+                EditorGUI.BeginDisabledGroup(true);
+                EditorGUI.ObjectField(rect, label, null, typeof(Material), true);
+                EditorGUI.EndDisabledGroup();
+            }
+            else
+            {
+                EditorGUI.PropertyField(rect, sp.GetArrayElementAtIndex(index), label);
+            }
         }
 
         /// <summary>
@@ -160,123 +132,158 @@ namespace Coffee.UIExtensions
         /// </summary>
         public override void OnInspectorGUI()
         {
+            var current = target as UIParticle;
+            if (current == null) return;
+
             serializedObject.Update();
 
-            EditorGUILayout.PropertyField(_spParticleSystem);
-            EditorGUI.indentLevel++;
-            var ps = _spParticleSystem.objectReferenceValue as ParticleSystem;
-            if (ps)
+            // Maskable
+            EditorGUILayout.PropertyField(_spMaskable);
+
+            // IgnoreCanvasScaler
+            using (var ccs = new EditorGUI.ChangeCheckScope())
             {
-                var pr = ps.GetComponent<ParticleSystemRenderer>();
-                var sp = new SerializedObject(pr).FindProperty("m_Materials");
-
-                EditorGUILayout.PropertyField(sp.GetArrayElementAtIndex(0), s_ContentParticleMaterial);
-                EditorGUILayout.PropertyField(sp.GetArrayElementAtIndex(1), s_ContentTrailMaterial);
-                sp.serializedObject.ApplyModifiedProperties();
-
-                if (!Application.isPlaying && pr.enabled)
+                EditorGUILayout.PropertyField(_spIgnoreCanvasScaler);
+                if (ccs.changed)
                 {
-                    EditorGUILayout.HelpBox("UIParticles disable the RendererModule in ParticleSystem at runtime to prevent double rendering.", MessageType.Warning);
-                }
-            }
-            EditorGUI.indentLevel--;
-
-            EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.PropertyField(_spTrailParticle);
-            EditorGUI.EndDisabledGroup();
-
-            var current = target as UIParticle;
-
-            EditorGUILayout.PropertyField(_spIgnoreParent);
-
-            EditorGUI.BeginDisabledGroup(!current.isRoot);
-            EditorGUILayout.PropertyField(_spScale);
-            EditorGUI.EndDisabledGroup();
-
-            // AnimatableProperties
-            AnimatedPropertiesEditor.DrawAnimatableProperties(_spAnimatableProperties, current.material);
-
-            current.GetComponentsInChildren<ParticleSystem>(true, s_ParticleSystems);
-            if (s_ParticleSystems.Any(x => x.GetComponent<UIParticle>() == null))
-            {
-                GUILayout.BeginHorizontal();
-                EditorGUILayout.HelpBox("There are child ParticleSystems that does not have a UIParticle component.\nAdd UIParticle component to them.", MessageType.Warning);
-                GUILayout.BeginVertical();
-                if (GUILayout.Button("Fix"))
-                {
-                    foreach (var p in s_ParticleSystems.Where(x => !x.GetComponent<UIParticle>()))
+                    foreach (UIParticle p in targets)
                     {
-                        p.gameObject.AddComponent<UIParticle>();
+                        p.ignoreCanvasScaler = _spIgnoreCanvasScaler.boolValue;
                     }
                 }
-                GUILayout.EndVertical();
-                GUILayout.EndHorizontal();
             }
-            s_ParticleSystems.Clear();
 
-            if (current.maskable && current.material && current.material.shader)
+            // Scale
+            _xyzMode = DrawFloatOrVector3Field(_spScale, _xyzMode);
+
+            // AnimatableProperties
+            var mats = current.particles
+                .Where(x => x)
+                .Select(x => x.GetComponent<ParticleSystemRenderer>().sharedMaterial)
+                .Where(x => x)
+                .ToArray();
+
+            // Animated properties
+            EditorGUI.BeginChangeCheck();
+            AnimatedPropertiesEditor.DrawAnimatableProperties(_spAnimatableProperties, mats);
+            if (EditorGUI.EndChangeCheck())
             {
-                var mat = current.material;
-                var shader = mat.shader;
-                foreach (var propName in s_MaskablePropertyNames)
+                foreach (UIParticle t in targets)
+                    t.SetMaterialDirty();
+            }
+
+            // ShrinkByMaterial
+            EditorGUILayout.PropertyField(_spShrinkByMaterial);
+
+            // Target ParticleSystems.
+            _ro.DoLayoutList();
+
+            serializedObject.ApplyModifiedProperties();
+
+            // Does the shader support UI masks?
+            if (current.maskable && current.GetComponentInParent<Mask>())
+            {
+                foreach (var mat in current.materials)
                 {
-                    if (!mat.HasProperty(propName))
+                    if (!mat || !mat.shader) continue;
+                    var shader = mat.shader;
+                    foreach (var propName in s_MaskablePropertyNames)
                     {
-                        EditorGUILayout.HelpBox(string.Format("Shader {0} doesn't have '{1}' property. This graphic is not maskable.", shader.name, propName), MessageType.Warning);
+                        if (mat.HasProperty(propName)) continue;
+
+                        EditorGUILayout.HelpBox(string.Format("Shader '{0}' doesn't have '{1}' property. This graphic cannot be masked.", shader.name, propName), MessageType.Warning);
                         break;
                     }
                 }
             }
 
-            serializedObject.ApplyModifiedProperties();
+            // Does the shader support UI masks?
+
+            if (FixButton(current.m_IsTrail, "This UIParticle component should be removed. The UIParticle for trails is no longer needed."))
+            {
+                DestroyUIParticle(current);
+                return;
+            }
+
+            current.GetComponentsInParent(true, s_TempParents);
+            if (FixButton(1 < s_TempParents.Count, "This UIParticle component should be removed. The parent UIParticle exists."))
+            {
+                DestroyUIParticle(current);
+                return;
+            }
+
+            current.GetComponentsInChildren(true, s_TempChildren);
+            if (FixButton(1 < s_TempChildren.Count, "The children UIParticle component should be removed."))
+            {
+                s_TempChildren.ForEach(child => DestroyUIParticle(child, true));
+            }
         }
 
-
-        //################################
-        // Private Members.
-        //################################
-        SerializedProperty _spParticleSystem;
-        SerializedProperty _spTrailParticle;
-        SerializedProperty _spScale;
-        SerializedProperty _spIgnoreParent;
-        SerializedProperty _spAnimatableProperties;
-        UIParticle[] _particles;
-        ShapeModuleUI[] _shapeModuleUIs;
-        ParticleSystemInspector _inspector;
-
-        void OnSceneGUI()
+        void DestroyUIParticle(UIParticle p, bool ignoreCurrent = false)
         {
-            _shapeModuleUIs = _shapeModuleUIs ?? _inspector?.m_ParticleEffectUI?.m_Emitters?.SelectMany(x => x.m_Modules).OfType<ShapeModuleUI>()?.ToArray();
-            if (_shapeModuleUIs == null || _shapeModuleUIs.Length == 0 || _shapeModuleUIs[0].GetParticleSystem() != (target as UIParticle).cachedParticleSystem)
-                return;
+            if (!p || ignoreCurrent && target == p) return;
 
-            Action postAction = () => { };
-            Color origin = ShapeModuleUI.s_GizmoColor.m_Color;
-            Color originDark = ShapeModuleUI.s_GizmoColor.m_Color;
-            ShapeModuleUI.s_GizmoColor.m_Color = s_GizmoColor;
-            ShapeModuleUI.s_GizmoColor.m_OptionalDarkColor = s_GizmoColor;
+            var cr = p.canvasRenderer;
+            DestroyImmediate(p);
+            DestroyImmediate(cr);
 
-            _particles
-                .Distinct()
-                .Select(x => new { canvas = x.canvas, ps = x.cachedParticleSystem, scale = x.scale })
-                .Where(x => x.ps && x.canvas)
-                .ToList()
-                .ForEach(x =>
+#if UNITY_2018_3_OR_NEWER
+            var stage = UnityEditor.Experimental.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+            if (stage != null && stage.scene.isLoaded)
+            {
+                PrefabUtility.SaveAsPrefabAsset(stage.prefabContentsRoot, stage.prefabAssetPath);
+            }
+#endif
+        }
+
+        bool FixButton(bool show, string text)
+        {
+            if (!show) return false;
+            using (new EditorGUILayout.HorizontalScope(GUILayout.ExpandWidth(true)))
+            {
+                EditorGUILayout.HelpBox(text, MessageType.Warning, true);
+                using (new EditorGUILayout.VerticalScope())
                 {
-                    var trans = x.ps.transform;
-                    var hasChanged = trans.hasChanged;
-                    var localScale = trans.localScale;
-                    postAction += () => trans.localScale = localScale;
-                    trans.localScale = Vector3.Scale(localScale, x.canvas.rootCanvas.transform.localScale * x.scale);
-                });
+                    return GUILayout.Button(s_ContentFix, GUILayout.Width(30));
+                }
+            }
+        }
 
-            foreach (var ui in _shapeModuleUIs)
-                ui.OnSceneViewGUI();
+        private static bool DrawFloatOrVector3Field(SerializedProperty sp, bool showXyz)
+        {
+            var x = sp.FindPropertyRelative("x");
+            var y = sp.FindPropertyRelative("y");
+            var z = sp.FindPropertyRelative("z");
 
-            postAction();
-            ShapeModuleUI.s_GizmoColor.m_Color = origin;
-            ShapeModuleUI.s_GizmoColor.m_OptionalDarkColor = originDark;
+            showXyz |= !Mathf.Approximately(x.floatValue, y.floatValue) ||
+                       !Mathf.Approximately(y.floatValue, z.floatValue) ||
+                       y.hasMultipleDifferentValues ||
+                       z.hasMultipleDifferentValues;
+
+            EditorGUILayout.BeginHorizontal();
+            if (showXyz)
+            {
+                EditorGUILayout.PropertyField(sp);
+            }
+            else
+            {
+                EditorGUI.BeginChangeCheck();
+                EditorGUILayout.PropertyField(x, s_ContentScale);
+                if (EditorGUI.EndChangeCheck())
+                    z.floatValue = y.floatValue = x.floatValue;
+            }
+
+            x.floatValue = Mathf.Max(0.001f, x.floatValue);
+            y.floatValue = Mathf.Max(0.001f, y.floatValue);
+            z.floatValue = Mathf.Max(0.001f, z.floatValue);
+
+            EditorGUI.BeginChangeCheck();
+            showXyz = GUILayout.Toggle(showXyz, s_Content3D, EditorStyles.miniButton, GUILayout.Width(30));
+            if (EditorGUI.EndChangeCheck() && !showXyz)
+                z.floatValue = y.floatValue = x.floatValue;
+            EditorGUILayout.EndHorizontal();
+
+            return showXyz;
         }
     }
 }
-#endif // [ASMDEFEX] DO NOT REMOVE THIS LINE MANUALLY.
